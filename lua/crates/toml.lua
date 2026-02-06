@@ -732,9 +732,10 @@ function M.parse_crates(buf)
                         multiline_feat = {
                             text = "",  -- Will be filled when we find the closing bracket
                             line = line_nr,
-                            -- NOTE: col.s is set but col.e is not updated when array closes.
-                            -- This is a known limitation for multiline arrays.
-                            col = Span.new(array_s - 1, 0),
+                            -- NOTE: For multiline arrays, col represents the start position.
+                            -- col.e is set to line length as a placeholder since the true end
+                            -- is on a different line and cannot be represented in a single Span.
+                            col = Span.new(array_s - 1, line:len()),
                             decl_col = Span.new(0, line:len()),
                         }
                     end
