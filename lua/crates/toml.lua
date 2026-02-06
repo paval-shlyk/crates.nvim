@@ -428,6 +428,21 @@ function M.parse_crate_table_str_array(line, line_nr, pattern)
     end
 end
 
+---Check if a line starts a multiline array for features
+---@param line string
+---@param name string
+---@return integer?, string?
+local function check_multiline_array_start(line, name)
+    -- Match "name = [" with optional content but no closing ]
+    -- Capture everything after the opening bracket
+    local pattern = "%s*" .. name .. "%s*=%s*%[()([^%]]*)$"
+    local array_s, partial_text = line:match(pattern)
+    if array_s then
+        return array_s, partial_text
+    end
+    return nil, nil
+end
+
 ---@param line string
 ---@param line_nr integer
 ---@param pattern string
@@ -581,6 +596,10 @@ function M.parse_crates(buf)
     local dep_section_crate
     ---@type WorkingCrate[]
     local working_crates = {}
+    ---@type table<string,any>?
+    local multiline_feat
+    ---@type string[]?
+    local multiline_feat_lines
 
     for i, line in ipairs(lines) do
         line = M.trim_comments(line)
@@ -607,6 +626,8 @@ function M.parse_crates(buf)
 
             dep_section = M.parse_section(section_text, line_nr, header_col)
             dep_section_crate = nil
+            multiline_feat = nil
+            multiline_feat_lines = nil
             if dep_section then
                 table.insert(sections, dep_section)
             end
@@ -676,10 +697,42 @@ function M.parse_crates(buf)
                 dep_section_crate = dep_section_crate or empty_crate
                 dep_section_crate.opt = opt
             end
-            local feat = M.parse_crate_table_str_array(line, line_nr, M.TABLE_FEAT_PATTERN)
-            if feat then
-                dep_section_crate = dep_section_crate or empty_crate
-                dep_section_crate.feat = feat
+            
+            -- Check for multiline features array
+            if multiline_feat then
+                -- We're in the middle of a multiline features array
+                local content_before_close = line:match("^%s*([^%]]*)%]")
+                if content_before_close then
+                    -- Found the closing bracket
+                    table.insert(multiline_feat_lines, content_before_close)
+                    multiline_feat.text = table.concat(multiline_feat_lines, "\n")
+                    dep_section_crate = dep_section_crate or empty_crate
+                    dep_section_crate.feat = multiline_feat
+                    multiline_feat = nil
+                    multiline_feat_lines = nil
+                else
+                    -- Still accumulating content
+                    table.insert(multiline_feat_lines, line)
+                end
+            else
+                -- Try to parse features on a single line first
+                local feat = M.parse_crate_table_str_array(line, line_nr, M.TABLE_FEAT_PATTERN)
+                if feat then
+                    dep_section_crate = dep_section_crate or empty_crate
+                    dep_section_crate.feat = feat
+                else
+                    -- Check if this starts a multiline features array
+                    local array_s, initial_content = check_multiline_array_start(line, "features")
+                    if array_s then
+                        multiline_feat_lines = { initial_content }
+                        multiline_feat = {
+                            text = "",  -- Will be filled when we find the closing bracket
+                            line = line_nr,
+                            col = Span.new(array_s - 1, 0),  -- End will be updated
+                            decl_col = Span.new(0, line:len()),
+                        }
+                    end
+                end
             end
         elseif dep_section then
             local crate = M.parse_inline_crate(line, line_nr)
