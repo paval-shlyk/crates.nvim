@@ -435,6 +435,8 @@ end
 local function check_multiline_array_start(line, name)
     -- Match "name = [" with optional content but no closing ]
     -- Capture everything after the opening bracket
+    -- NOTE: This pattern assumes feature names don't contain ']' which is
+    -- guaranteed by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
     local pattern = "%s*" .. name .. "%s*=%s*%[()([^%]]*)$"
     local array_s, partial_text = line:match(pattern)
     if array_s then
@@ -701,6 +703,8 @@ function M.parse_crates(buf)
             -- Check for multiline features array
             if multiline_feat then
                 -- We're in the middle of a multiline features array
+                -- NOTE: This pattern assumes feature names don't contain ']' which is
+                -- guaranteed by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
                 local content_before_close = line:match("^%s*([^%]]*)%]")
                 if content_before_close then
                     -- Found the closing bracket
@@ -728,7 +732,9 @@ function M.parse_crates(buf)
                         multiline_feat = {
                             text = "",  -- Will be filled when we find the closing bracket
                             line = line_nr,
-                            col = Span.new(array_s - 1, 0),  -- End will be updated
+                            -- NOTE: col.s is set but col.e is not updated when array closes.
+                            -- This is a known limitation for multiline arrays.
+                            col = Span.new(array_s - 1, 0),
                             decl_col = Span.new(0, line:len()),
                         }
                     end
