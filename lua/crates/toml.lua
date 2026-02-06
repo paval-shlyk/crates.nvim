@@ -435,8 +435,10 @@ end
 local function check_multiline_array_start(line, name)
     -- Match "name = [" with optional content but no closing ]
     -- Capture everything after the opening bracket
-    -- NOTE: This pattern assumes feature names don't contain ']' which is
-    -- guaranteed by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
+    -- Pattern explanation: [^%]]* means zero or more chars that are not ]
+    -- (In Lua patterns, %] is the escape sequence for literal ])
+    -- NOTE: This assumes feature names don't contain ] which is guaranteed
+    -- by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
     local pattern = "%s*" .. name .. "%s*=%s*%[()([^%]]*)$"
     local array_s, partial_text = line:match(pattern)
     if array_s then
@@ -703,8 +705,10 @@ function M.parse_crates(buf)
             -- Check for multiline features array
             if multiline_feat then
                 -- We're in the middle of a multiline features array
-                -- NOTE: This pattern assumes feature names don't contain ']' which is
-                -- guaranteed by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
+                -- Pattern explanation: [^%]]* means zero or more chars that are not ]
+                -- (In Lua patterns, %] is the escape sequence for literal ])
+                -- NOTE: This assumes feature names don't contain ] which is guaranteed
+                -- by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
                 local content_before_close = line:match("^%s*([^%]]*)%]")
                 if content_before_close then
                     -- Found the closing bracket
