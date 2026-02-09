@@ -572,6 +572,15 @@ function M.parse_inline_crate(line, line_nr)
         return crate
     end
 
+    -- Fallback: Check if it looks like an inline table start "name = {"
+    local pattern = [[^%s*()([^%s]+)()%s*=%s*{]]
+    local name_s, name, name_e = line:match(pattern)
+    if name then
+        crate.explicit_name = name
+        crate.explicit_name_col = Span.new(name_s - 1, name_e - 1)
+        return crate
+    end
+
     return nil
 end
 
