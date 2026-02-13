@@ -76,6 +76,8 @@ M.TomlCrateSyntax = TomlCrateSyntax
 
 ---@class TomlCrateFeat: TomlCrateEntry
 ---@field items TomlFeature[]
+---@field end_line integer?
+---@field end_col integer?
 
 ---@enum DepKind
 local DepKind = {
@@ -92,6 +94,7 @@ M.DepKind = DepKind
 ---@field col Span
 ---relative to to the start of the features text
 ---@field decl_col Span
+---@field line integer
 ---@field quote Quotes
 ---@field comma boolean
 local TomlFeature = {}
@@ -103,8 +106,12 @@ M.TomlFeature = TomlFeature
 
 
 ---@param text string
+---@param start_line integer?
+---@param start_col_offset integer?
 ---@return TomlFeature[]
-function M.parse_crate_features(text)
+function M.parse_crate_features(text, start_line, start_col_offset)
+    start_line = start_line or 0
+    start_col_offset = start_col_offset or 0
     ---@type TomlFeature[]
     local feats = {}
     ---@param fds integer
@@ -116,11 +123,40 @@ function M.parse_crate_features(text)
     ---@param fde integer
     ---@param c string?
     for fds, qs, fs, f, fe, qe, fde, c in text:gmatch([[[,]?()%s*(["'])()([^,"']*)()(["']?)%s*()([,]?)]]) do
+        -- Calculate line and column for the feature
+        local line_delta = 0
+        local last_newline_pos = 0
+        for i = 1, fs - 1 do
+            if text:sub(i, i) == "\n" then
+                line_delta = line_delta + 1
+                last_newline_pos = i
+            end
+        end
+
+        local col_start_offset = (line_delta == 0) and start_col_offset or 0
+        local feature_line = start_line + line_delta
+        local feature_col_start = (fs - 1) - last_newline_pos + col_start_offset
+        local feature_col_end = (fe - 1) - last_newline_pos + col_start_offset
+        
+        -- Also calculate decl_col (start of quote/whitespace)
+        local decl_line_delta = 0
+        local decl_last_newline_pos = 0
+        for i = 1, fds - 1 do
+            if text:sub(i, i) == "\n" then
+                decl_line_delta = decl_line_delta + 1
+                decl_last_newline_pos = i
+            end
+        end
+        local decl_col_start_offset = (decl_line_delta == 0) and start_col_offset or 0
+        local decl_col_start = (fds - 1) - decl_last_newline_pos + decl_col_start_offset
+        local decl_col_end = (fde - 1) - last_newline_pos + col_start_offset -- approx, mostly on same line as end of feature
+
         ---@type TomlFeature
         local feat = {
             name = f,
-            col = Span.new(fs - 1, fe - 1),
-            decl_col = Span.new(fds - 1, fde - 1),
+            col = Span.new(feature_col_start, feature_col_end),
+            decl_col = Span.new(decl_col_start, decl_col_end),
+            line = feature_line,
             quote = { s = qs, e = qe ~= "" and qe or nil },
             comma = c == ",",
         }
@@ -137,7 +173,11 @@ function Crate.new(obj)
         obj.vers.reqs = semver.parse_requirements(obj.vers.text)
     end
     if obj.feat then
-        obj.feat.items = M.parse_crate_features(obj.feat.text)
+        -- Pass the line and offset information if available
+        -- For single line tables, offset comes from col.s
+        local start_line = obj.feat.line
+        local start_col_offset = obj.feat.col.s
+        obj.feat.items = M.parse_crate_features(obj.feat.text, start_line, start_col_offset)
     end
     if obj.def then
         obj.def.enabled = obj.def.text ~= "false"
@@ -650,11 +690,21 @@ function M.parse_crates(buf)
             -- (In Lua patterns, %] is the escape sequence for literal ])
             -- NOTE: This assumes feature names don't contain ] which is guaranteed
             -- by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
-            local content_before_close = line:match("^%s*([^%]]*)%]")
+            
+            -- Pattern explanation: [^%]]* means zero or more chars that are not ]
+            -- (In Lua patterns, %] is the escape sequence for literal ])
+            -- NOTE: This assumes feature names don't contain ] which is guaranteed
+            -- by Cargo spec (features can only contain ASCII alphanumeric, _, -, +)
+            local content_before_close, suffix = line:match("^%s*([^%]]*)%](.*)$")
             if content_before_close then
                 -- Found the closing bracket
                 table.insert(multiline_feat_lines, content_before_close)
                 multiline_feat.text = table.concat(multiline_feat_lines, "\n")
+                
+                -- Record the end position of the array (at the closing bracket)
+                local closing_bracket_col = line:find("]")
+                multiline_feat.end_line = line_nr
+                multiline_feat.end_col = closing_bracket_col
 
                 if not dep_section_crate then
                     -- Must be section crate case if dep_section_crate is nil
@@ -667,7 +717,161 @@ function M.parse_crates(buf)
                 end
 
                 dep_section_crate.feat = multiline_feat
-                dep_section_crate.feat.items = M.parse_crate_features(multiline_feat.text)
+                
+                -- Start col offset is 0 for multiline text because we stripped the prefix in the first line
+                -- BUT, wait. in check_multiline_array_start, we captured partial_text.
+                -- And we put it in multiline_feat_lines.
+                -- So the text starts at the first feature char.
+                -- The first line of text maps to multiline_feat.line.
+                -- And the col offset for that first line is multiline_feat.col.s + 1 (the char after [).
+                local start_col_offset = multiline_feat.col.s + 1
+                dep_section_crate.feat.items = M.parse_crate_features(multiline_feat.text, multiline_feat.line, start_col_offset)
+                
+                -- Handle suffix if we are in an inline table
+                if suffix and suffix:match("[^%s,]") then
+                    -- If we are in an inline table, we might have more keys after the array
+                    -- We construct a fake line to re-use existing parsers: name = { suffix
+                    -- But parsers expect comma handling.
+                    -- Suffix likely starts with comma or closing brace or spaces.
+                    
+                    -- Clean suffix: remove leading comma and spaces to make it a clean list of keys
+                    local clean_suffix = suffix:match("^%s*,?%s*(.*)$")
+
+                    -- We can try to parse known keys from the suffix
+                    -- We create a context object to pass to parsers
+                    local fake_crate = {
+                        explicit_name = dep_section_crate.explicit_name,
+                        explicit_name_col = dep_section_crate.explicit_name_col,
+                    }
+                    -- Construct a fake line that places the suffix in a valid context for the regexes
+                    -- The regexes usually look like: ... name = { ... target = "val" ... }
+                    -- So we need: name = { <clean_suffix>
+                    -- We use the original explicit name to ensure pattern matching works if it checks name
+                    local fake_line = dep_section_crate.explicit_name .. " = { " .. clean_suffix
+                    
+                    -- Helper to adjust spans from fake line to real line
+                    local function adjust_span(span)
+                        if not span then return nil end
+                        -- fake_line: name = { clean_suffix
+                        -- real_line: ... ] suffix
+                        -- diff = real_start_of_clean_suffix - fake_start_of_clean_suffix
+                        
+                        -- Find where clean_suffix starts in suffix
+                        local suffix_start_in_line = closing_bracket_col + 1
+                        local clean_suffix_start_in_suffix = suffix:find(clean_suffix, 1, true) or 1
+                        local real_clean_suffix_start = suffix_start_in_line + (clean_suffix_start_in_suffix - 1)
+                        
+                        local fake_clean_suffix_start = #dep_section_crate.explicit_name + 6 -- " = { " is 5 chars. +1 for 1-based
+                        
+                        local offset = real_clean_suffix_start - fake_clean_suffix_start
+                        return Span.new(span.s + offset, span.e + offset)
+                    end
+
+
+                dep_section_crate.feat = multiline_feat
+                -- Start col offset is 0 for multiline text because we stripped the prefix in the first line
+                -- BUT, wait. in check_multiline_array_start, we captured partial_text.
+                -- And we put it in multiline_feat_lines.
+                -- So the text starts at the first feature char.
+                -- The first line of text maps to multiline_feat.line.
+                -- And the col offset for that first line is multiline_feat.col.s + 1 (the char after [).
+                -- Wait, multiline_feat.col.s is (array_s - 1). array_s is index of `[`.
+                -- So `[` is at multiline_feat.col.s.
+                -- The text starts at multiline_feat.col.s + 1.
+                local start_col_offset = multiline_feat.col.s + 1
+                dep_section_crate.feat.items = M.parse_crate_features(multiline_feat.text, multiline_feat.line, start_col_offset)
+                
+                -- Handle suffix if we are in an inline table
+                if suffix and suffix:match("[^%s,]") then
+                    -- If we are in an inline table, we might have more keys after the array
+                    -- We construct a fake line to re-use existing parsers: name = { suffix
+                    -- But parsers expect comma handling.
+                    -- Suffix likely starts with comma or closing brace or spaces.
+                    
+                    -- Clean suffix: remove leading comma and spaces to make it a clean list of keys
+                    local clean_suffix = suffix:match("^%s*,?%s*(.*)$")
+
+                    -- We can try to parse known keys from the suffix
+                    -- We create a context object to pass to parsers
+                    local fake_crate = {
+                        explicit_name = dep_section_crate.explicit_name,
+                        explicit_name_col = dep_section_crate.explicit_name_col,
+                    }
+                    -- Construct a fake line that places the suffix in a valid context for the regexes
+                    -- The regexes usually look like: ... name = { ... target = "val" ... }
+                    -- So we need: name = { <clean_suffix>
+                    -- We use the original explicit name to ensure pattern matching works if it checks name
+                    local fake_line = dep_section_crate.explicit_name .. " = { " .. clean_suffix
+                    
+                    -- Helper to adjust spans from fake line to real line
+                    local function adjust_span(span)
+                        if not span then return nil end
+                        -- fake_line: name = { clean_suffix
+                        -- real_line: ... ] suffix
+                        -- diff = real_start_of_clean_suffix - fake_start_of_clean_suffix
+                        
+                        -- Find where clean_suffix starts in suffix
+                        local suffix_start_in_line = closing_bracket_col + 1
+                        local clean_suffix_start_in_suffix = suffix:find(clean_suffix, 1, true) or 1
+                        local real_clean_suffix_start = suffix_start_in_line + (clean_suffix_start_in_suffix - 1)
+                        
+                        local fake_clean_suffix_start = #dep_section_crate.explicit_name + 6 -- " = { " is 5 chars. +1 for 1-based
+                        
+                        local offset = real_clean_suffix_start - fake_clean_suffix_start
+                        return Span.new(span.s + offset, span.e + offset)
+                    end
+                    
+                    local function adjust_entry(entry)
+                        if not entry then return nil end
+                        entry.line = line_nr
+                        entry.col = adjust_span(entry.col)
+                        entry.decl_col = adjust_span(entry.decl_col)
+                        return entry
+                    end
+
+                    -- DEBUG: Fail with fake_line to see it
+                    -- error("DEBUG: " .. fake_line)
+                    -- I suspect the regex for INLINE_TABLE_VERS_PATTERN requires a comma or something that I'm not providing correctly.
+                    -- inline_table_str_pattern: ... name .. [[%s*=%s*(["'])()([^"',%s}]*)()(["']?)%s*()[,]?.*[}]?%s*$]]
+                    -- fake_line: dep = { version = "1.2.3" }
+                    -- It should match.
+                    -- Maybe parse_inline_table_str expects more context?
+                    -- It calls: line:match(pattern)
+                    
+                    local vers = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_VERS_PATTERN)
+                    if vers then dep_section_crate.vers = adjust_entry(vers) end
+                    
+                    local registry = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_REGISTRY_PATTERN)
+                    if registry then dep_section_crate.registry = adjust_entry(registry) end
+                    
+                    local path = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_PATH_PATTERN)
+                    if path then dep_section_crate.path = adjust_entry(path) end
+                    
+                    local git = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_GIT_PATTERN)
+                    if git then dep_section_crate.git = adjust_entry(git) end
+                    
+                    local branch = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_BRANCH_PATTERN)
+                    if branch then dep_section_crate.branch = adjust_entry(branch) end
+                    
+                    local tag = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_TAG_PATTERN)
+                    if tag then dep_section_crate.tag = adjust_entry(tag) end
+                    
+                    local rev = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_REV_PATTERN)
+                    if rev then dep_section_crate.rev = adjust_entry(rev) end
+                    
+                    local pkg = parse_inline_table_str(fake_crate, fake_line, line_nr, M.INLINE_TABLE_PKG_PATTERN)
+                    if pkg then dep_section_crate.pkg = adjust_entry(pkg) end
+                    
+                    local def = parse_inline_table_bool(fake_crate, fake_line, line_nr, M.INLINE_TABLE_DEF_PATTERN)
+                    if def then dep_section_crate.def = adjust_entry(def) end
+                    
+                    local workspace = parse_inline_table_bool(fake_crate, fake_line, line_nr, M.INLINE_TABLE_WORKSPACE_PATTERN)
+                    if workspace then dep_section_crate.workspace = adjust_entry(workspace) end
+                    
+                    local opt = parse_inline_table_bool(fake_crate, fake_line, line_nr, M.INLINE_TABLE_OPT_PATTERN)
+                    if opt then dep_section_crate.opt = adjust_entry(opt) end
+                end
+
                 multiline_feat = nil
                 multiline_feat_lines = nil
 

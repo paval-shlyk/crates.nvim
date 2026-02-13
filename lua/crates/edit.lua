@@ -459,6 +459,70 @@ function M.enable_feature(buf, crate, feature)
     local t = '"' .. feature .. '"'
 
     if crate.feat then
+        -- Check if it is a multiline array
+        if crate.feat.end_line and crate.feat.end_col then
+            -- For multiline, we append before the closing bracket.
+            -- We can assume it's nice to add a comma if needed.
+            local last_feat = crate.feat.items[#crate.feat.items]
+            local prefix = ""
+            
+            if last_feat then
+                if not last_feat.comma then
+                    prefix = ","
+                end
+                
+                -- Determine if we should put the new feature on a new line
+                -- or just append it.
+                -- For now, let's keep the existing style if it seems to be single-line
+                -- or multi-line.
+                
+                -- If last feature is on a different line than end_line, then it's clearly multiline style.
+                -- Or if start line != end line.
+                if crate.feat.end_line > crate.feat.line then
+                     -- Multiline. Ideally we add a newline + indent.
+                     -- But we don't know the indent easily without reading the file.
+                     -- A simple heuristic: Space after comma if same line.
+                     -- Or just ", "
+                     -- Let's just append ", " .. t before the closing bracket.
+                     -- This puts it on the same line as the closing bracket or the last item if they are same line.
+                     
+                     -- Wait, we need to be careful about where we insert.
+                     -- crate.feat.end_col is index of `]`.
+                     -- crate.feat.end_line is the line of `]`.
+                     
+                     -- We want to insert `prefix .. " " .. t` at `end_col`.
+                     -- But if there is already content on that line (e.g. `   ]`), we might want to insert before `]`.
+                     -- If the last item was on a previous line, and ended with comma?
+                     
+                     -- Let's stick to simple append for now to be safe.
+                     prefix = ", "
+                     if last_feat.comma then
+                         prefix = " "
+                     end
+                end
+            end
+            
+            -- Wait, simpler logic:
+            -- If last item has no comma, add comma.
+            -- Then add space and text.
+            local text_to_insert = t
+            if last_feat and not last_feat.comma then
+                text_to_insert = ", " .. t
+            else
+                text_to_insert = " " .. t
+            end
+            
+            vim.api.nvim_buf_set_text(
+                buf,
+                crate.feat.end_line,
+                crate.feat.end_col - 1, -- insert before `]`
+                crate.feat.end_line,
+                crate.feat.end_col - 1,
+                { text_to_insert }
+            )
+            return Span.pos(crate.feat.end_line)
+        end
+        
         local last_feat = crate.feat.items[#crate.feat.items]
         if last_feat then
             if not last_feat.comma then
