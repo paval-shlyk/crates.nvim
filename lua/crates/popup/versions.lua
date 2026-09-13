@@ -28,6 +28,15 @@ local function select_version(ctx, line, alt)
     local line_span
     line_span = edit.set_version(ctx.buf, crate, version.parsed, alt)
 
+    -- Inherited versions are edited in the workspace root buffer; member spans
+    -- and the current buffer's text are unchanged.
+    if crate.inherited then
+        if state.cfg.popup.hide_on_select then
+            popup.hide()
+        end
+        return
+    end
+
     -- update only crate version position, not the parsed requirements
     -- (or any other semantic information), so selecting another version
     -- with `smart_insert` will behave predictable
@@ -45,6 +54,19 @@ local function select_version(ctx, line, alt)
                 crate.vers.decl_col = vers.decl_col
                 crate.vers.quote = vers.quote
             end
+        end
+    elseif crate.syntax == TomlCrateSyntax.DOTTED then
+        local line_nr = line_span.s
+        ---@type string
+        local text = vim.api.nvim_buf_get_lines(ctx.buf, line_nr, line_nr + 1, false)[1]
+        text = toml.trim_comments(text)
+        local c = toml.parse_dotted_crate(text, line_nr)
+        if c and c.vers then
+            crate.vers = crate.vers or c.vers
+            crate.vers.line = line_nr
+            crate.vers.col = c.vers.col
+            crate.vers.decl_col = c.vers.decl_col
+            crate.vers.quote = c.vers.quote
         end
     else -- ctx.crate.syntax == TomlCrateSyntax.INLINE_TABLE or ctx.crate.syntax == TomlCrateSyntax.PLAIN then
         local line_nr = line_span.s

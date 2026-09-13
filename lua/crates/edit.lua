@@ -6,6 +6,7 @@ local types = require("crates.types")
 local Cond = types.Cond
 local Span = types.Span
 local SemVer = types.SemVer
+local workspace = require("crates.workspace")
 
 local M = {}
 
@@ -227,7 +228,7 @@ function M.remove_entry(buf, crate, key)
     ---@type TomlCrateEntry
     local entry = crate[key]
 
-    if crate.syntax == TomlCrateSyntax.TABLE then
+    if crate.syntax == TomlCrateSyntax.TABLE or crate.syntax == TomlCrateSyntax.DOTTED then
         local line = entry.line
         local end_line = line + 1
         if key == "feat" and entry.end_line and entry.end_line >= line then
@@ -271,6 +272,13 @@ local function insert_version(buf, crate, text)
                 { ' version = "' .. text .. '",' }
             )
             return Span.pos(line)
+        elseif crate.syntax == TomlCrateSyntax.DOTTED then
+            local line = crate.lines.e
+            vim.api.nvim_buf_set_lines(
+                buf, line, line, false,
+                { crate.explicit_name .. '.version = "' .. text .. '"' }
+            )
+            return crate.lines:moved(0, 1)
         else -- crate.syntax == TomlCrateSyntax.PLAIN
             error("unreachable")
         end
@@ -478,9 +486,24 @@ end
 ---@param version SemVer
 ---@param alt boolean?
 ---@return Span
+---@param buf integer
+---@param crate TomlCrate
+---@return integer, TomlCrate
+local function workspace_target(buf, crate)
+    if crate.inherited and crate.workspace_root then
+        return workspace.ensure_buf(crate.workspace_root), crate.inherited
+    end
+    return buf, crate
+end
+
 function M.set_version(buf, crate, version, alt)
-    local text = M.version_text(crate, version, alt)
-    return insert_version(buf, crate, text)
+    local target_buf, target = workspace_target(buf, crate)
+    local text = M.version_text(target, version, alt)
+    local span = insert_version(target_buf, target, text)
+    if target_buf ~= buf then
+        require("crates.core").update(target_buf)
+    end
+    return span
 end
 
 ---@param buf integer
@@ -567,6 +590,13 @@ function M.enable_feature(buf, crate, feature)
         vim.api.nvim_buf_set_lines(
             buf, line, line, false,
             { "features = [" .. t .. "]" }
+        )
+        return Span.pos(line)
+    elseif crate.syntax == TomlCrateSyntax.DOTTED then
+        local line = crate.lines.e
+        vim.api.nvim_buf_set_lines(
+            buf, line, line, false,
+            { crate.explicit_name .. ".features = [" .. t .. "]" }
         )
         return Span.pos(line)
     elseif crate.syntax == TomlCrateSyntax.INLINE_TABLE then
@@ -660,6 +690,7 @@ end
 ---@param crate TomlCrate
 ---@return Span
 function M.enable_def_features(buf, crate)
+    buf, crate = workspace_target(buf, crate)
     if state.cfg.remove_enabled_default_features then
         return M.remove_entry(buf, crate, "def")
     else
@@ -679,6 +710,7 @@ end
 ---@param crate TomlCrate
 ---@return Span
 local function disable_def_features(buf, crate)
+    buf, crate = workspace_target(buf, crate)
     if crate.def then
         local line = crate.def.line
         vim.api.nvim_buf_set_text(
@@ -700,6 +732,16 @@ local function disable_def_features(buf, crate)
             line,
             false,
             { "default-features = false" }
+        )
+        return crate.lines:moved(0, 1)
+    elseif crate.syntax == TomlCrateSyntax.DOTTED then
+        local line = crate.lines.e
+        vim.api.nvim_buf_set_lines(
+            buf,
+            line,
+            line,
+            false,
+            { crate.explicit_name .. ".default-features = false" }
         )
         return crate.lines:moved(0, 1)
     elseif crate.syntax == TomlCrateSyntax.INLINE_TABLE then
@@ -814,7 +856,7 @@ function M.extract_crate_into_table(buf, crate)
         crate.section:display(crate.explicit_name),
     }
     if crate.workspace then
-        table.insert(lines, "workspace = " .. '"' .. crate.workspace.text .. '"')
+        table.insert(lines, "workspace = " .. crate.workspace.text)
     end
     if crate.vers then
         table.insert(lines, "version = " .. '"' .. crate.vers.text .. '"')
@@ -849,7 +891,7 @@ function M.extract_crate_into_table(buf, crate)
         end
     end
     if crate.opt then
-        table.insert(lines, "optional = " .. '"' .. crate.opt.text .. '"')
+        table.insert(lines, "optional = " .. crate.opt.text)
     end
 
     table.insert(lines, "")

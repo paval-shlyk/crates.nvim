@@ -13,6 +13,7 @@
 
 ### Features
 - support nvim 0.11 winborder as popup.border (#163)
+- inherit versions from `[workspace.dependencies]` (`foo.workspace = true`)
 
 ## v0.7.1
 

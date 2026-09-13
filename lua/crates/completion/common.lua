@@ -286,6 +286,8 @@ local function complete_crates(buf, prefix, line, col, crate)
                         newText = string.format(' version = "%s",', version),
                     } }
                 end
+            elseif crate.syntax == TomlCrateSyntax.DOTTED then
+                -- Workspace-inherited crates must not gain a member `version` key.
             else -- crate.syntax == TomlCrateSyntax.PLAIN
                 error("unreachable")
             end

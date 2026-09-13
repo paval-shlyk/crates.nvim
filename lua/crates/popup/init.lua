@@ -75,7 +75,7 @@ local function line_crate_info()
         else
             -- crate_info()
         end
-    elseif crate.syntax == TomlCrateSyntax.TABLE then
+    elseif crate.syntax == TomlCrateSyntax.TABLE or crate.syntax == TomlCrateSyntax.DOTTED then
         if crate.vers and line == crate.vers.line then
             versions_info()
         elseif crate.feat and toml.feat_contains_line(crate.feat, line) then

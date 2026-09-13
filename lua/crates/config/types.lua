@@ -54,6 +54,9 @@
 ---@field section_invalid string
 ---@field workspace_section_not_default string
 ---@field workspace_section_has_target string
+---@field workspace_invalid string
+---@field workspace_no_root string
+---@field workspace_dep_missing string
 ---@field section_dup string
 ---@field section_dup_orig string
 ---@field crate_dup string

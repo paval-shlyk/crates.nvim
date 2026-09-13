@@ -47,6 +47,10 @@ M.TomlSectionKind = TomlSectionKind
 ---@field feat TomlCrateFeat?
 ---@field section TomlSection
 ---@field dep_kind DepKind
+--- Workspace definition this crate inherits from (`workspace = true`).
+---@field inherited TomlCrate?
+--- Absolute path of the workspace root Cargo.toml, if a root was found.
+---@field workspace_root string?
 local Crate = {}
 M.Crate = Crate
 
@@ -55,8 +59,25 @@ local TomlCrateSyntax = {
     PLAIN = 1,
     INLINE_TABLE = 2,
     TABLE = 3,
+    DOTTED = 4,
 }
 M.TomlCrateSyntax = TomlCrateSyntax
+
+---Order matches `edit.default_key_order`.
+M.CRATE_ENTRY_KEYS = {
+    "workspace",
+    "vers",
+    "registry",
+    "path",
+    "git",
+    "branch",
+    "tag",
+    "rev",
+    "pkg",
+    "def",
+    "feat",
+    "opt",
+}
 
 ---@class TomlCrateEntry
 ---@field line integer -- 0-indexed
@@ -217,7 +238,13 @@ end
 
 ---@return Requirement[]
 function Crate:vers_reqs()
-    return self.vers and self.vers.reqs or {}
+    if self.vers then
+        return self.vers.reqs
+    end
+    if self.inherited and self.inherited.vers then
+        return self.inherited.vers.reqs
+    end
+    return {}
 end
 
 ---@param name string
@@ -243,7 +270,13 @@ end
 
 ---@return boolean
 function Crate:is_def_enabled()
-    return not self.def or self.def.enabled
+    if self.def then
+        return self.def.enabled
+    end
+    if self.inherited and self.inherited.def then
+        return self.inherited.def.enabled
+    end
+    return true
 end
 
 ---@return boolean
@@ -253,7 +286,42 @@ end
 
 ---@return string
 function Crate:package()
-    return self.pkg and self.pkg.text or self.explicit_name
+    if self.pkg then
+        return self.pkg.text
+    end
+    if self.inherited and self.inherited.pkg then
+        return self.inherited.pkg.text
+    end
+    return self.explicit_name
+end
+
+---@return TomlCrate?
+function Crate:vers_crate()
+    if self.vers then
+        return self
+    end
+    return self.inherited
+end
+
+---Whether `line` (0-based) belongs to this crate for cursor/hit-testing.
+---@param line integer
+---@return boolean
+function Crate:owns_line(line)
+    if self.syntax == TomlCrateSyntax.DOTTED then
+        for _, key in ipairs(M.CRATE_ENTRY_KEYS) do
+            ---@type TomlCrateEntry?
+            local entry = self[key]
+            if entry then
+                local start_line = entry.line
+                local end_line = entry.end_line or entry.line
+                if line >= start_line and line <= end_line then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    return self.lines:contains(line)
 end
 
 ---@return integer, Span
@@ -488,13 +556,14 @@ end
 local function check_multiline_array_start(line, name)
     -- `array_s` is the 1-based index of the first char after `[`.
     -- Feature names cannot contain `]` (Cargo: ASCII alphanumeric, `_`, `-`, `+`).
+    -- Allow `{`, `,`, whitespace (inline/table) and `.` (dotted `foo.features = [`).
     -- Reject keys that only *end* with `name` (`extra-features = [`).
     local before, decl_s, array_s, partial_text = line:match("^(.-)()" .. name .. "%s*=%s*%[()([^%]]*)$")
     if not array_s then
         return nil, nil, nil
     end
     local last = before:sub(-1)
-    if before ~= "" and not last:match("[%s{,]") then
+    if before ~= "" and not last:match("[%s{,.]") then
         return nil, nil, nil
     end
     return array_s, partial_text, decl_s
@@ -703,6 +772,126 @@ function M.parse_inline_crate(line, line_nr)
     return nil
 end
 
+local DOTTED_FIELDS = {
+    workspace = { field = "workspace", kind = "bool", pattern = "TABLE_WORKSPACE_PATTERN" },
+    version = { field = "vers", kind = "str", pattern = "TABLE_VERS_PATTERN" },
+    registry = { field = "registry", kind = "str", pattern = "TABLE_REGISTRY_PATTERN" },
+    path = { field = "path", kind = "str", pattern = "TABLE_PATH_PATTERN" },
+    git = { field = "git", kind = "str", pattern = "TABLE_GIT_PATTERN" },
+    branch = { field = "branch", kind = "str", pattern = "TABLE_BRANCH_PATTERN" },
+    tag = { field = "tag", kind = "str", pattern = "TABLE_TAG_PATTERN" },
+    rev = { field = "rev", kind = "str", pattern = "TABLE_REV_PATTERN" },
+    package = { field = "pkg", kind = "str", pattern = "TABLE_PKG_PATTERN" },
+    features = { field = "feat", kind = "array" },
+    ["default-features"] = { field = "def", kind = "bool", pattern = "TABLE_DEF_PATTERN" },
+    ["default_features"] = { field = "def", kind = "bool", pattern = "TABLE_DEF_PATTERN" },
+    optional = { field = "opt", kind = "bool", pattern = "TABLE_OPT_PATTERN" },
+}
+
+---@param entry table
+---@param offset integer
+---@param name_col integer
+---@param line_len integer
+local function offset_dotted_entry(entry, offset, name_col, line_len)
+    entry.col = Span.new(entry.col.s + offset, entry.col.e + offset)
+    entry.decl_col = Span.new(name_col, line_len)
+    if entry.end_col then
+        entry.end_col = entry.end_col + offset
+    end
+    return entry
+end
+
+---Parse a dotted key assignment (`foo.workspace = true`, `foo.version = "1"`).
+---@param line string
+---@param line_nr integer
+---@return TomlCrate?
+function M.parse_dotted_crate(line, line_nr)
+    local name_s, name, name_e, key_s, key = line:match("^%s*()([%w_-]+)()%.()([%w_-]+)%s*=")
+    if not name then
+        return nil
+    end
+
+    local spec = DOTTED_FIELDS[key]
+    if not spec then
+        return nil
+    end
+
+    ---@type TomlCrate
+    local crate = {
+        explicit_name = name,
+        explicit_name_col = Span.new(name_s - 1, name_e - 1),
+        lines = Span.new(line_nr, line_nr + 1),
+        syntax = TomlCrateSyntax.DOTTED,
+    }
+
+    if spec.kind == "array" then
+        local feat = M.parse_crate_table_str_array(line, line_nr, M.TABLE_FEAT_PATTERN)
+        if feat then
+            crate.feat = feat
+        end
+        return crate
+    end
+
+    local sub = line:sub(key_s)
+    local offset = key_s - 1
+    local entry
+    if spec.kind == "bool" then
+        entry = M.parse_crate_table_bool(sub, line_nr, M[spec.pattern])
+    else
+        entry = M.parse_crate_table_str(sub, line_nr, M[spec.pattern])
+    end
+    if entry then
+        crate[spec.field] = offset_dotted_entry(entry, offset, name_s - 1, #line)
+    end
+
+    return crate
+end
+
+---@param dst TomlCrate
+---@param src TomlCrate
+local function merge_dotted_into(dst, src)
+    for _, key in ipairs(M.CRATE_ENTRY_KEYS) do
+        if src[key] and not dst[key] then
+            dst[key] = src[key]
+        end
+    end
+    dst.lines.s = math.min(dst.lines.s, src.lines.s)
+    dst.lines.e = math.max(dst.lines.e, src.lines.e)
+    if dst.workspace then
+        dst.dep_kind = DepKind.WORKSPACE
+    elseif dst.path then
+        dst.dep_kind = DepKind.PATH
+    elseif dst.git then
+        dst.dep_kind = DepKind.GIT
+    else
+        dst.dep_kind = DepKind.REGISTRY
+    end
+end
+
+---@param crates TomlCrate[]
+---@return TomlCrate[]
+local function merge_dotted_crates(crates)
+    ---@type TomlCrate[]
+    local result = {}
+    ---@type table<string, TomlCrate>
+    local dotted = {}
+    for _, c in ipairs(crates) do
+        if c.syntax == TomlCrateSyntax.DOTTED then
+            local key = c:cache_key()
+            local dst = dotted[key]
+            if dst then
+                merge_dotted_into(dst, c)
+            else
+                dotted[key] = c
+                table.insert(result, c)
+            end
+        else
+            table.insert(result, c)
+        end
+    end
+    return result
+end
+
 ---@param line string
 ---@return string
 function M.trim_comments(line)
@@ -715,6 +904,7 @@ end
 ---@return TomlCrate?
 function M.refresh_crate(buf, crate)
     local _, crates = M.parse_crates(buf)
+    require("crates.workspace").resolve(buf, crates)
     local key = crate:cache_key()
     for _, c in ipairs(crates) do
         if c:cache_key() == key then
@@ -734,7 +924,7 @@ local function finish_multiline_feat(crate, feat, line_nr, suffix, closing_brack
     feat.end_col = closing_bracket_col - 1
     crate.feat = feat
     parse_inline_suffix(crate, suffix, line_nr, closing_bracket_col)
-    if crate.syntax == TomlCrateSyntax.INLINE_TABLE then
+    if crate.syntax ~= TomlCrateSyntax.TABLE then
         crate.lines.e = line_nr + 1
     end
 end
@@ -750,7 +940,7 @@ local function apply_unclosed_feat(crate, feat, feat_lines)
     feat.end_line = feat.line + #feat_lines - 1
     feat.end_col = #(feat_lines[#feat_lines] or "")
     crate.feat = feat
-    if crate.syntax == TomlCrateSyntax.INLINE_TABLE then
+    if crate.syntax ~= TomlCrateSyntax.TABLE then
         crate.lines.e = feat.end_line + 1
     end
 end
@@ -760,9 +950,15 @@ end
 ---@return TomlCrate[]
 ---@return WorkingCrate[]
 function M.parse_crates(buf)
-    ---@type string[]
     local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    return M.parse_crates_from_lines(lines)
+end
 
+---@param lines string[]
+---@return TomlSection[]
+---@return TomlCrate[]
+---@return WorkingCrate[]
+function M.parse_crates_from_lines(lines)
     local sections = {}
     local crates = {}
 
@@ -792,7 +988,7 @@ function M.parse_crates(buf)
                     apply_unclosed_feat(dep_section_crate, multiline_feat, multiline_feat_lines)
                     dep_section_crate.lines = dep_section.lines
                     table.insert(crates, Crate.new(dep_section_crate))
-                elseif dep_section_crate and dep_section_crate.syntax == TomlCrateSyntax.INLINE_TABLE then
+                elseif dep_section_crate and dep_section_crate.syntax ~= TomlCrateSyntax.TABLE then
                     apply_unclosed_feat(dep_section_crate, multiline_feat, multiline_feat_lines)
                     table.insert(crates, Crate.new(dep_section_crate))
                 end
@@ -847,7 +1043,7 @@ function M.parse_crates(buf)
                 apply_unclosed_feat(dep_section_crate, multiline_feat, multiline_feat_lines)
                 multiline_feat = nil
                 multiline_feat_lines = nil
-                if dep_section_crate and dep_section_crate.syntax == TomlCrateSyntax.INLINE_TABLE then
+                if dep_section_crate and dep_section_crate.syntax ~= TomlCrateSyntax.TABLE then
                     table.insert(crates, Crate.new(dep_section_crate))
                     dep_section_crate = nil
                 end
@@ -942,7 +1138,12 @@ function M.parse_crates(buf)
                 end
             end
         elseif not handled and dep_section then
-            local crate = M.parse_inline_crate(line, line_nr)
+            -- Dotted keys first: `foo.version = "1"` would otherwise parse as a
+            -- plain crate named `foo.version`.
+            local crate = M.parse_dotted_crate(line, line_nr)
+            if not crate then
+                crate = M.parse_inline_crate(line, line_nr)
+            end
             if crate then
                 crate.section = dep_section
 
@@ -983,13 +1184,13 @@ function M.parse_crates(buf)
             apply_unclosed_feat(dep_section_crate, multiline_feat, multiline_feat_lines)
             dep_section_crate.lines = dep_section.lines
             table.insert(crates, Crate.new(dep_section_crate))
-        elseif dep_section_crate and dep_section_crate.syntax == TomlCrateSyntax.INLINE_TABLE then
+        elseif dep_section_crate and dep_section_crate.syntax ~= TomlCrateSyntax.TABLE then
             apply_unclosed_feat(dep_section_crate, multiline_feat, multiline_feat_lines)
             table.insert(crates, Crate.new(dep_section_crate))
         end
     end
 
-    return sections, crates, working_crates
+    return sections, merge_dotted_crates(crates), working_crates
 end
 
 return M

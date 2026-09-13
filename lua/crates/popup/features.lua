@@ -101,6 +101,13 @@ local function toggle_feature(ctx, line)
     else
         if crate_feature then
             edit.disable_feature(ctx.buf, ctx.crate, crate_feature)
+        elseif ctx.crate.inherited and ctx.crate.inherited:get_feat(feat_name) then
+            util.notify(
+                vim.log.levels.INFO,
+                "Feature '%s' is inherited from [workspace.dependencies] and cannot be disabled here",
+                feat_name
+            )
+            return
         else
             edit.enable_feature(ctx.buf, ctx.crate, feat_name)
         end

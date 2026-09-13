@@ -11,6 +11,7 @@ Documentation for `crates.nvim` `unstable`
 - Show version and upgrade candidates
     - Show if compatible version is a pre-release or yanked
     - Show if no version is compatible
+    - Inherit versions from `[workspace.dependencies]` (`foo.workspace = true`)
 - Open popup with crate info
     - Open documentation, crates.io, repository and homepage urls
 - Open popup with crate versions

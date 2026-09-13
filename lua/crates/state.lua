@@ -42,6 +42,8 @@ end
 ---@field api_cache table<string,ApiCrate>
 ---@field search_cache SearchCache
 ---@field visible boolean
+--- Member Cargo.toml buffer → workspace root Cargo.toml path.
+---@field buf_to_root table<integer,string>
 local State = {
     buf_cache = {},
     api_cache = ApiCache.new(),
@@ -50,6 +52,7 @@ local State = {
         searches = {},
     },
     visible = true,
+    buf_to_root = {},
 }
 
 function State:clear_cache()

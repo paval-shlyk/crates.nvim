@@ -103,7 +103,7 @@ function M.get_crate_on_line(buf, line)
     end
 
     for k, c in pairs(crates) do
-        if c.lines:contains(line) then
+        if c:owns_line(line) then
             return k, c
         end
     end
@@ -163,24 +163,34 @@ function M.features_info(crate, features)
         end
     end
 
-    if not crate.def or crate.def.enabled then
+    local def_src = crate
+    if crate.inherited and not crate.def then
+        def_src = crate.inherited
+    end
+    if not def_src.def or def_src.def.enabled then
         info["default"] = FeatureInfo.ENABLED
         local api_feat = features.list[1]
         update_transitive(api_feat)
     end
 
-    local crate_features = crate.feat
-    if not crate_features then
-        return info
-    end
-
-    for _, crate_feat in ipairs(crate_features.items) do
-        local api_feat = features:get_feat(crate_feat.name)
-        if api_feat then
-            info[api_feat.name] = FeatureInfo.ENABLED
-            update_transitive(api_feat)
+    ---@param feat TomlCrateFeat?
+    local function enable_feats(feat)
+        if not feat then
+            return
+        end
+        for _, crate_feat in ipairs(feat.items) do
+            local api_feat = features:get_feat(crate_feat.name)
+            if api_feat then
+                info[api_feat.name] = FeatureInfo.ENABLED
+                update_transitive(api_feat)
+            end
         end
     end
+
+    if crate.inherited then
+        enable_feats(crate.inherited.feat)
+    end
+    enable_feats(crate.feat)
 
     return info
 end

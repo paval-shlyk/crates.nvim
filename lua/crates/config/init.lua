@@ -442,6 +442,24 @@ entry(schema_diagnostic, {
     hidden = true,
 })
 entry(schema_diagnostic, {
+    name = "workspace_invalid",
+    type = STRING_TYPE,
+    default = "Invalid workspace boolean, expected `true` or `false`",
+    hidden = true,
+})
+entry(schema_diagnostic, {
+    name = "workspace_no_root",
+    type = STRING_TYPE,
+    default = "Could not find a workspace root Cargo.toml",
+    hidden = true,
+})
+entry(schema_diagnostic, {
+    name = "workspace_dep_missing",
+    type = STRING_TYPE,
+    default = "Crate is not defined in [workspace.dependencies]",
+    hidden = true,
+})
+entry(schema_diagnostic, {
     name = "section_dup",
     type = STRING_TYPE,
     default = "Duplicate dependency section",

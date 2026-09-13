@@ -23,6 +23,7 @@ local CrateScope = {
     DEF = 2,
     FEAT = 3,
     PACKAGE = 4,
+    WORKSPACE = 5,
 }
 
 ---@param section TomlSection
@@ -80,6 +81,11 @@ local function crate_diagnostic(crate, kind, severity, scope, data, message_args
             d.end_lnum = crate.vers.line
             d.col = crate.vers.col.s
             d.end_col = crate.vers.col.e
+        elseif crate.workspace then
+            d.lnum = crate.workspace.line
+            d.end_lnum = crate.workspace.line
+            d.col = crate.workspace.col.s
+            d.end_col = crate.workspace.col.e
         end
     elseif scope == CrateScope.DEF then
         if crate.def then
@@ -105,6 +111,13 @@ local function crate_diagnostic(crate, kind, severity, scope, data, message_args
         d.end_lnum = pkg_line
         d.col = pkg_col.s
         d.end_col = pkg_col.e
+    elseif scope == CrateScope.WORKSPACE then
+        if crate.workspace then
+            d.lnum = crate.workspace.line
+            d.end_lnum = crate.workspace.line
+            d.col = crate.workspace.col.s
+            d.end_col = crate.workspace.col.e
+        end
     end
 
     return d
@@ -210,6 +223,27 @@ function M.process_crates(sections, crates)
                 end
             end
 
+            if c.workspace then
+                if c.workspace.text ~= "false" and c.workspace.text ~= "true" then
+                    table.insert(diagnostics, crate_diagnostic(
+                        c,
+                        CratesDiagnosticKind.WORKSPACE_INVALID,
+                        vim.diagnostic.severity.ERROR,
+                        CrateScope.WORKSPACE
+                    ))
+                elseif c.workspace.enabled and not c.inherited then
+                    local kind = c.workspace_root
+                        and CratesDiagnosticKind.WORKSPACE_DEP_MISSING
+                        or CratesDiagnosticKind.WORKSPACE_NO_ROOT
+                    table.insert(diagnostics, crate_diagnostic(
+                        c,
+                        kind,
+                        vim.diagnostic.severity.WARN,
+                        CrateScope.WORKSPACE
+                    ))
+                end
+            end
+
             ---@type table<string,TomlFeature>
             local feats = {}
             for _, f in ipairs(c:feats()) do
@@ -257,6 +291,7 @@ function M.process_api_crate(crate, api_crate, diagnostics)
         lines = crate.lines,
         vers_line = crate.vers and crate.vers.line or crate.lines.s,
         match_kind = MatchKind.NOMATCH,
+        inherited = crate.inherited ~= nil,
     }
 
     if crate.dep_kind == DepKind.REGISTRY then
@@ -273,13 +308,17 @@ function M.process_api_crate(crate, api_crate, diagnostics)
             end
         end
 
+        local vers_crate = crate:vers_crate()
+
         if newest then
             if semver.matches_requirements(newest.parsed, crate:vers_reqs()) then
                 -- version matches, no upgrade available
                 info.vers_match = newest
                 info.match_kind = MatchKind.VERSION
 
-                if crate.vers and crate.vers.text ~= edit.version_text(crate, newest.parsed) then
+                if vers_crate and vers_crate.vers
+                    and vers_crate.vers.text ~= edit.version_text(vers_crate, newest.parsed)
+                then
                     info.vers_update = newest
                 end
             else
@@ -289,7 +328,9 @@ function M.process_api_crate(crate, api_crate, diagnostics)
                 info.vers_upgrade = newest
 
                 if info.vers_match then
-                    if crate.vers and crate.vers.text ~= edit.version_text(crate, info.vers_match.parsed) then
+                    if vers_crate and vers_crate.vers
+                        and vers_crate.vers.text ~= edit.version_text(vers_crate, info.vers_match.parsed)
+                    then
                         info.vers_update = info.vers_match
                     end
                 end
@@ -327,7 +368,7 @@ function M.process_api_crate(crate, api_crate, diagnostics)
                 else
                     -- no match found
                     local kind = CratesDiagnosticKind.VERS_NOMATCH
-                    if not crate.vers then
+                    if not crate.vers and not crate.inherited then
                         kind = CratesDiagnosticKind.CRATE_NOVERS
                     end
                     table.insert(diagnostics, crate_diagnostic(

@@ -6,6 +6,7 @@ local toml = require("crates.toml")
 local DepKind = toml.DepKind
 local ui = require("crates.ui")
 local util = require("crates.util")
+local workspace = require("crates.workspace")
 
 ---@class Core
 ---@field throttled_updates table<integer,fun()[]>
@@ -32,8 +33,8 @@ M.load_crate = async.wrap(function(crate_name)
         for k, c in pairs(cache.crates) do
             -- Don't try to fetch info from crates.io if it's a local or git crate,
             -- or from a registry other than crates.io
-            -- TODO: Once there is workspace support, resolve the crate
-            if c.dep_kind ~= DepKind.REGISTRY or c.registry ~= nil then
+            local registry = c.registry or (c.inherited and c.inherited.registry)
+            if c.dep_kind ~= DepKind.REGISTRY or registry ~= nil then
                 goto continue
             end
 
@@ -52,10 +53,17 @@ M.load_crate = async.wrap(function(crate_name)
     end
 end)
 
+---@type table<integer, boolean>
+local updating = {}
+
 ---@param buf integer?
 ---@param reload boolean?
 local function update(buf, reload)
     buf = buf or util.current_buf()
+    if updating[buf] then
+        return
+    end
+    updating[buf] = true
 
     if reload then
         state:clear_cache()
@@ -63,6 +71,7 @@ local function update(buf, reload)
     end
 
     local sections, crates, working_crates = toml.parse_crates(buf)
+    workspace.resolve(buf, crates)
     local crate_cache, diagnostics = diagnostic.process_crates(sections, crates)
     ---@type BufCache
     local cache = {
@@ -79,8 +88,8 @@ local function update(buf, reload)
     for k, c in pairs(crate_cache) do
         -- Don't try to fetch info from crates.io if it's a local or git crate,
         -- or from a registry other than crates.io
-        -- TODO: Once there is workspace support, resolve the crate
-        if c.dep_kind ~= DepKind.REGISTRY or c.registry ~= nil then
+        local registry = c.registry or (c.inherited and c.inherited.registry)
+        if c.dep_kind ~= DepKind.REGISTRY or registry ~= nil then
             goto continue
         end
 
@@ -115,6 +124,22 @@ local function update(buf, reload)
         end
     end
     M.throttled_updates[buf] = nil
+
+    -- Refresh members that inherit from this file so inherited versions stay live.
+    local path = vim.api.nvim_buf_get_name(buf)
+    if path ~= "" then
+        path = vim.fs.normalize(path)
+        for member_buf, root_path in pairs(state.buf_to_root) do
+            if member_buf ~= buf
+                and root_path == path
+                and vim.api.nvim_buf_is_loaded(member_buf)
+            then
+                update(member_buf, false)
+            end
+        end
+    end
+
+    updating[buf] = nil
 end
 
 ---@param buf integer?

@@ -7,6 +7,7 @@ local M = {}
 ---@field vers_update ApiVersion?
 ---@field vers_upgrade ApiVersion?
 ---@field match_kind MatchKind
+---@field inherited boolean?
 
 ---NOTE: Used to index the user configuration, so keys have to be in sync
 ---@enum MatchKind
@@ -137,6 +138,9 @@ M.CratesDiagnosticKind = {
     SECTION_INVALID = "section_invalid",
     WORKSPACE_SECTION_NOT_DEFAULT = "workspace_section_not_default",
     WORKSPACE_SECTION_HAS_TARGET = "workspace_section_has_target",
+    WORKSPACE_INVALID = "workspace_invalid",
+    WORKSPACE_NO_ROOT = "workspace_no_root",
+    WORKSPACE_DEP_MISSING = "workspace_dep_missing",
     SECTION_DUP = "section_dup",
     CRATE_DUP = "crate_dup",
     CRATE_NOVERS = "crate_novers",
