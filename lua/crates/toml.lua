@@ -303,6 +303,18 @@ function Crate:vers_crate()
     return self.inherited
 end
 
+---Line for version/loading virtual text. Inherited crates have no local `vers`.
+---@return integer
+function Crate:virt_text_line()
+    if self.vers then
+        return self.vers.line
+    end
+    if self.workspace then
+        return self.workspace.line
+    end
+    return self.lines.s
+end
+
 ---Whether `line` (0-based) belongs to this crate for cursor/hit-testing.
 ---@param line integer
 ---@return boolean
@@ -806,7 +818,11 @@ end
 ---@param line_nr integer
 ---@return TomlCrate?
 function M.parse_dotted_crate(line, line_nr)
-    local name_s, name, name_e, key_s, key = line:match("^%s*()([%w_-]+)()%.()([%w_-]+)%s*=")
+    -- Allow optional quotes and whitespace around `.` (`dep.workspace = true`,
+    -- `"async-trait".workspace = true`, `dep . workspace = true`).
+    local name_s, name, name_e, key_s, key = line:match(
+        [[^%s*["']?()([A-Za-z0-9_%-]+)()["']?%s*%.%s*()([A-Za-z0-9_%-]+)%s*=]]
+    )
     if not name then
         return nil
     end
@@ -841,6 +857,9 @@ function M.parse_dotted_crate(line, line_nr)
         entry = M.parse_crate_table_str(sub, line_nr, M[spec.pattern])
     end
     if entry then
+        if spec.kind == "bool" then
+            entry.text = entry.text:gsub(",$", ""):gsub("^['\"]", ""):gsub("['\"]$", "")
+        end
         crate[spec.field] = offset_dotted_entry(entry, offset, name_s - 1, #line)
     end
 
@@ -895,6 +914,7 @@ end
 ---@param line string
 ---@return string
 function M.trim_comments(line)
+    line = line:gsub("\r$", "")
     local uncommented = line:match("^([^#]*)#.*$")
     return uncommented or line
 end

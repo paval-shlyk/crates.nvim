@@ -135,7 +135,7 @@ function M.display_loading(buf, crates)
     local buf_state = M.get_or_init(buf)
 
     for _, crate in ipairs(crates) do
-        local vers_line = crate.vers and crate.vers.line or crate.lines.s
+        local vers_line = crate:virt_text_line()
         buf_state.line_state[vers_line] = LineState.LOADING
 
         local virt_text = { { state.cfg.text.loading, state.cfg.highlight.loading } }

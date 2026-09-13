@@ -33,6 +33,20 @@ local function crate_named(crates, name)
 end
 
 describe("parse dotted workspace keys", function()
+    it("parses dep.workspace = true", function()
+        local crates = parse({
+            "[dependencies]",
+            "dep.workspace = true",
+        })
+        assert.equals(1, #crates)
+        local crate = crates[1]
+        assert.equals("dep", crate.explicit_name)
+        assert.equals(TomlCrateSyntax.DOTTED, crate.syntax)
+        assert.equals("true", crate.workspace.text)
+        assert.is_true(crate.workspace.enabled)
+        assert.equals(DepKind.WORKSPACE, crate.dep_kind)
+    end)
+
     it("parses foo.workspace = true", function()
         local crates = parse({
             "[dependencies]",
@@ -46,6 +60,7 @@ describe("parse dotted workspace keys", function()
         assert.equals(DepKind.WORKSPACE, crate.dep_kind)
         assert.is_true(crate:owns_line(1))
         assert.is_false(crate:owns_line(0))
+        assert.equals(crate.workspace.line, crate:virt_text_line())
     end)
 
     it("parses inline table workspace = true", function()
@@ -67,6 +82,9 @@ describe("parse dotted workspace keys", function()
         assert.equals(1, #crates)
         assert.equals(TomlCrateSyntax.TABLE, crates[1].syntax)
         assert.is_true(crates[1].workspace.enabled)
+        -- Section header is line 0; spinner/version sit on `workspace = true`.
+        assert.equals(1, crates[1]:virt_text_line())
+        assert.equals(0, crates[1].lines.s)
     end)
 
     it("merges adjacent dotted keys", function()
@@ -132,6 +150,29 @@ describe("parse dotted workspace keys", function()
         assert.equals("1.0", foo.vers.text)
         assert.is_nil(foo.workspace)
         assert.equals(DepKind.REGISTRY, foo.dep_kind)
+    end)
+
+    it("parses quoted names and spaces around the dot", function()
+        local crates = parse({
+            "[dependencies]",
+            '"async-trait".workspace = true',
+            "serde . workspace = true",
+            "tokio.workspace          = true",
+        })
+        assert.equals("async-trait", crate_named(crates, "async-trait").explicit_name)
+        assert.is_true(crate_named(crates, "async-trait").workspace.enabled)
+        assert.is_true(crate_named(crates, "serde").workspace.enabled)
+        assert.is_true(crate_named(crates, "tokio").workspace.enabled)
+    end)
+
+    it("parses CRLF dotted workspace keys", function()
+        local crates = parse({
+            "[dependencies]\r",
+            "dep.workspace = true\r",
+        })
+        assert.equals(1, #crates)
+        assert.equals("dep", crates[1].explicit_name)
+        assert.is_true(crates[1].workspace.enabled)
     end)
 
     it("ignores unknown dotted suffixes", function()

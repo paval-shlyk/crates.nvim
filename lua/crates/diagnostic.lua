@@ -289,7 +289,7 @@ function M.process_api_crate(crate, api_crate, diagnostics)
     ---@type CrateInfo
     local info = {
         lines = crate.lines,
-        vers_line = crate.vers and crate.vers.line or crate.lines.s,
+        vers_line = crate:virt_text_line(),
         match_kind = MatchKind.NOMATCH,
         inherited = crate.inherited ~= nil,
     }
