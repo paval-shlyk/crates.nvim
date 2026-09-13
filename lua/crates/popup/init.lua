@@ -69,16 +69,6 @@ local function line_crate_info()
         info.pref = popup.Type.FEATURE_DETAILS
     end
 
-    local function workspace_versions()
-        if crate.workspace and crate.workspace.line == line then
-            if crate.syntax ~= TomlCrateSyntax.INLINE_TABLE or crate.workspace.decl_col:contains(col) then
-                versions_info()
-                return true
-            end
-        end
-        return false
-    end
-
     if crate.syntax == TomlCrateSyntax.PLAIN then
         if crate.vers.col:moved(-1, 1):contains(col) then
             versions_info()
@@ -88,20 +78,16 @@ local function line_crate_info()
     elseif crate.syntax == TomlCrateSyntax.TABLE or crate.syntax == TomlCrateSyntax.DOTTED then
         if crate.vers and line == crate.vers.line then
             versions_info()
-        elseif workspace_versions() then
-            -- inherited version lives on `workspace = true`
         elseif crate.feat and toml.feat_contains_line(crate.feat, line) then
             features_info()
         elseif crate.def and line == crate.def.line then
             default_features_info()
         else
-            -- crate_info()
+            -- crate_info() — `foo.workspace = true` has no local version key
         end
     elseif crate.syntax == TomlCrateSyntax.INLINE_TABLE then
         if crate.vers and crate.vers.line == line and crate.vers.decl_col:contains(col) then
             versions_info()
-        elseif workspace_versions() then
-            -- inherited version lives on `workspace = true`
         elseif crate.feat and toml.feat_contains_line(crate.feat, line)
             and (line ~= crate.feat.line or crate.feat.decl_col:contains(col) or col >= crate.feat.col.s)
         then

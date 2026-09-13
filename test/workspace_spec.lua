@@ -627,6 +627,27 @@ describe("emulated workspace", function()
         assert.is_not_nil(root_lines[loc.lnum + 1]:find("serde", 1, true))
     end)
 
+    it("hydrates an empty bufadd stub so LSP does not jump to a blank buffer", function()
+        local root = vim.fs.normalize(tmp .. "/Cargo.toml")
+        -- Named stub, possibly not yet read from disk (first-jump empty buffer).
+        vim.fn.bufadd(root)
+
+        local loc = {
+            filename = root,
+            lnum = 0,
+            col = 0,
+            end_col = 0,
+        }
+        local lsp_loc = workspace.lsp_location(loc)
+        assert.is_not_nil(lsp_loc.uri:find("file://", 1, true))
+        assert.is_not_nil(lsp_loc.uri:find("Cargo.toml", 1, true))
+
+        local buf = workspace.ensure_buf(root)
+        local text = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+        assert.is_not_nil(text:find("[workspace]", 1, true))
+        assert.is_not_nil(text:find("serde", 1, true))
+    end)
+
     it("edits the workspace pin without changing the member", function()
         local crates, member_buf = load_and_resolve(tmp .. "/app/Cargo.toml")
         local semver = require("crates.semver")

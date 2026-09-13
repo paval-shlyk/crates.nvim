@@ -7,7 +7,8 @@ local M = {}
 ---@param path string
 ---@return string
 local function normalize_path(path)
-    return vim.fs.normalize(path)
+    -- `:p` so LSP jumps get a real `file://` URI, not a cwd-relative stub buffer.
+    return vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
 end
 
 ---@param buf integer
@@ -61,6 +62,30 @@ function M.lines_of(path)
     return read_file_lines(path), nil
 end
 
+---True if the buffer has no real content (the bufadd/bufload empty-stub case).
+---@param buf integer
+---@return boolean
+local function buf_is_empty(buf)
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    return #lines == 0 or (#lines == 1 and lines[1] == "")
+end
+
+---Fill an empty, unmodified buffer from disk. `bufadd`+`bufload` can leave a
+---named buffer empty; LSP then jumps to that stub instead of reading the file.
+---@param buf integer
+---@param path string
+local function hydrate_empty_buf(buf, path)
+    if vim.bo[buf].modified or not buf_is_empty(buf) then
+        return
+    end
+    local file_lines = read_file_lines(path)
+    if not file_lines or #file_lines == 0 then
+        return
+    end
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, file_lines)
+    vim.bo[buf].modified = false
+end
+
 ---Load (without showing) the buffer for `path`.
 ---@param path string
 ---@return integer
@@ -68,10 +93,12 @@ function M.ensure_buf(path)
     path = normalize_path(path)
     local buf = loaded_buf_for_path(path)
     if buf then
+        hydrate_empty_buf(buf, path)
         return buf
     end
     buf = vim.fn.bufadd(path)
     vim.fn.bufload(buf)
+    hydrate_empty_buf(buf, path)
     return buf
 end
 
@@ -319,6 +346,9 @@ end
 ---@param loc WorkspaceLocation
 ---@return lsp.Location
 function M.lsp_location(loc)
+    loc.filename = normalize_path(loc.filename)
+    -- Hydrate before the client jumps, otherwise it reuses an empty bufadd stub.
+    M.ensure_buf(loc.filename)
     return {
         uri = vim.uri_from_fname(loc.filename),
         range = {
@@ -346,8 +376,12 @@ function M.goto_definition()
         return false
     end
 
+    loc.filename = normalize_path(loc.filename)
     vim.cmd("normal! m'")
     vim.cmd.edit(vim.fn.fnameescape(loc.filename))
+    if buf_is_empty(0) then
+        vim.cmd.edit({ bang = true })
+    end
     local last = vim.api.nvim_buf_line_count(0)
     local lnum = math.max(0, math.min(loc.lnum, last - 1))
     pcall(vim.api.nvim_win_set_cursor, 0, { lnum + 1, loc.col })
