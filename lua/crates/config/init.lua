@@ -1806,6 +1806,17 @@ entry(schema_lsp, {
         Whether to enable the `hover` capability.
     ]],
 })
+entry(schema_lsp, {
+    name = "definition",
+    type = BOOLEAN_TYPE,
+    default = true,
+    description = [[
+        Whether to enable the `definitionProvider` capability.
+
+        Jump from a `workspace = true` dependency to its definition in
+        `[workspace.dependencies]`, or to that crate's `Cargo.toml` when it is a path dep.
+    ]],
+})
 
 
 ---@param s string

@@ -79,7 +79,7 @@ end
 ---@return boolean
 local function is_workspace_header(line)
     line = toml.trim_comments(line)
-    return line:match("^%s*%[workspace%s*[%].]") ~= nil
+    return line:match("^%s*%[%s*workspace%s*[%].]") ~= nil
 end
 
 ---@param lines string[]
@@ -256,6 +256,102 @@ function M.resolve(buf, crates)
         workspace_crates = M.parse_workspace_crates(root_path)
     end
     M.apply(crates, workspace_crates, root_path)
+end
+
+---@class WorkspaceLocation
+---@field filename string
+---@field lnum integer -- 0-based
+---@field col integer -- 0-based
+---@field end_col integer -- 0-based exclusive
+
+---@param root_path string
+---@param path_text string
+---@return string?
+local function resolve_path_manifest(root_path, path_text)
+    local base = vim.fs.dirname(root_path)
+    local p = normalize_path(join_path(base, path_text))
+    if p:match("Cargo%.toml$") and file_exists(p) then
+        return p
+    end
+    local cargo = normalize_path(join_path(p, "Cargo.toml"))
+    if file_exists(cargo) then
+        return cargo
+    end
+    return nil
+end
+
+---Location of the workspace crate this dependency refers to.
+---Path deps jump to that package's Cargo.toml; others jump to the
+---`[workspace.dependencies]` entry in the workspace root.
+---@param crate TomlCrate
+---@param buf integer?
+---@return WorkspaceLocation?
+function M.definition_location(crate, buf)
+    local root = crate.workspace_root or (buf and state.buf_to_root[buf])
+    local src = crate.inherited or crate
+    local path_text = src.path and src.path.text
+
+    if path_text and root then
+        local manifest = resolve_path_manifest(root, path_text)
+        if manifest then
+            return {
+                filename = manifest,
+                lnum = 0,
+                col = 0,
+                end_col = 0,
+            }
+        end
+    end
+
+    if crate.inherited and root then
+        local name_col = src.explicit_name_col or { s = 0, e = 0 }
+        return {
+            filename = root,
+            lnum = src.lines.s,
+            col = name_col.s,
+            end_col = name_col.e,
+        }
+    end
+
+    return nil
+end
+
+---@param loc WorkspaceLocation
+---@return lsp.Location
+function M.lsp_location(loc)
+    return {
+        uri = vim.uri_from_fname(loc.filename),
+        range = {
+            start = { line = loc.lnum, character = loc.col },
+            ["end"] = { line = loc.lnum, character = loc.end_col },
+        },
+    }
+end
+
+---Jump to the workspace crate definition for the crate on the current line.
+---@return boolean
+function M.goto_definition()
+    local util = require("crates.util")
+    local buf = util.current_buf()
+    local line = util.cursor_pos()
+    local _, crate = util.get_crate_on_line(buf, line)
+    if not crate then
+        util.notify(vim.log.levels.WARN, "No crate on the current line")
+        return false
+    end
+
+    local loc = M.definition_location(crate, buf)
+    if not loc then
+        util.notify(vim.log.levels.WARN, "No workspace definition for this crate")
+        return false
+    end
+
+    vim.cmd("normal! m'")
+    vim.cmd.edit(vim.fn.fnameescape(loc.filename))
+    local last = vim.api.nvim_buf_line_count(0)
+    local lnum = math.max(0, math.min(loc.lnum, last - 1))
+    pcall(vim.api.nvim_win_set_cursor, 0, { lnum + 1, loc.col })
+    return true
 end
 
 return M

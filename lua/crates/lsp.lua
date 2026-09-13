@@ -3,6 +3,7 @@ local util = require("crates.util")
 local state = require("crates.state")
 local completion = require("crates.completion.common")
 local popup = require("crates.popup")
+local workspace = require("crates.workspace")
 
 local M = {
     id = nil,
@@ -120,6 +121,7 @@ function M.start_server()
                 triggerCharacters = completion.trigger_characters(),
             },
             hoverProvider = state.cfg.lsp.hover,
+            definitionProvider = state.cfg.lsp.definition,
         },
         handlers = {
             ---@param _method string
@@ -149,6 +151,24 @@ function M.start_server()
                 end)
             end,
             ["textDocument/hover"] = popup.show,
+            ---@param _method string
+            ---@param params { textDocument: { uri: string }, position: { line: integer, character: integer } }
+            ---@param callback fun(err: nil, result: lsp.Location|lsp.Location[]|nil)
+            ["textDocument/definition"] = function(_method, params, callback)
+                local buf = util.current_buf()
+                local line = params and params.position and params.position.line
+                local _, crate = util.get_crate_on_line(buf, line)
+                if not crate then
+                    callback(nil, nil)
+                    return
+                end
+                local loc = workspace.definition_location(crate, buf)
+                if not loc then
+                    callback(nil, nil)
+                    return
+                end
+                callback(nil, workspace.lsp_location(loc))
+            end,
         },
         on_exit = function(_code, _signal, client_id)
             if M.id == client_id then

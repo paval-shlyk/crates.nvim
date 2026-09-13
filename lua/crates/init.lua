@@ -132,6 +132,11 @@ local M = {
     ---Convert crate dependency to use a git source instead of version number.
     ---@type fun()
     use_git_source = actions.use_git_source,
+    ---Go to the workspace crate definition.
+    ---Path deps open that package's `Cargo.toml`; other inherited deps open the
+    ---`[workspace.dependencies]` entry in the workspace root.
+    ---@type fun(): boolean
+    goto_workspace_definition = require("crates.workspace").goto_definition,
 
     ---Open the homepage of the crate on the current line.
     ---@type fun()

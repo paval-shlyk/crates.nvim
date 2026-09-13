@@ -12,6 +12,7 @@ Documentation for `crates.nvim` `unstable`
     - Show if compatible version is a pre-release or yanked
     - Show if no version is compatible
     - Inherit versions from `[workspace.dependencies]` (`foo.workspace = true`)
+    - Go to definition of a workspace dependency (`lsp.definition` / `goto_workspace_definition`)
 - Open popup with crate info
     - Open documentation, crates.io, repository and homepage urls
 - Open popup with crate versions
@@ -361,6 +362,7 @@ require("crates").setup {
         actions = false,
         completion = false,
         hover = false,
+        definition = true,
     },
 }
 ```
@@ -458,6 +460,10 @@ require("crates").expand_plain_crate_to_inline_table()
 require("crates").extract_crate_into_table()
 -- Convert crate dependency to use a git source instead of version number.
 require("crates").use_git_source()
+-- Go to the workspace crate definition.
+-- Path deps open that package's `Cargo.toml`; other inherited deps open the
+-- `[workspace.dependencies]` entry in the workspace root.
+require("crates").goto_workspace_definition(): boolean
 
 -- Open the homepage of the crate on the current line.
 require("crates").open_homepage()
@@ -511,6 +517,7 @@ corresponding functions. These are the functions available as commands:
 - `use_git_source()`
 - `expand_plain_crate_to_inline_table()`
 - `extract_crate_into_table()`
+- `goto_workspace_definition()`
 - `open_homepage()`
 - `open_repository()`
 - `open_documentation()`

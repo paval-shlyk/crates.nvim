@@ -12,6 +12,7 @@ Documentation for `crates.nvim` `<VERSION>`
     - Show if compatible version is a pre-release or yanked
     - Show if no version is compatible
     - Inherit versions from `[workspace.dependencies]` (`foo.workspace = true`)
+    - Go to definition of a workspace dependency (`lsp.definition` / `goto_workspace_definition`)
 - Open popup with crate info
     - Open documentation, crates.io, repository and homepage urls
 - Open popup with crate versions

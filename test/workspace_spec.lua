@@ -1,10 +1,13 @@
 local config = require("crates.config")
+local diagnostic = require("crates.diagnostic")
 local edit = require("crates.edit")
 local state = require("crates.state")
 local toml = require("crates.toml")
+local types = require("crates.types")
 local workspace = require("crates.workspace")
 local TomlCrateSyntax = toml.TomlCrateSyntax
 local DepKind = toml.DepKind
+local CratesDiagnosticKind = types.CratesDiagnosticKind
 
 state.cfg = config.build({
     remove_empty_features = false,
@@ -30,6 +33,83 @@ local function crate_named(crates, name)
         end
     end
     error("crate not found: " .. name)
+end
+
+---@param path string
+---@param contents string
+local function write_file(path, contents)
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+    local f = assert(io.open(path, "w"))
+    f:write(contents)
+    f:close()
+end
+
+---@param path string
+---@return TomlCrate[]
+---@return integer
+---@return TomlSection[]
+local function load_and_resolve(path)
+    local buf = vim.fn.bufadd(path)
+    vim.fn.bufload(buf)
+    local sections, crates = toml.parse_crates(buf)
+    workspace.resolve(buf, crates)
+    return crates, buf, sections
+end
+
+---A small cargo workspace on disk:
+---  root/Cargo.toml              [workspace] + [workspace.dependencies]
+---  root/lib/Cargo.toml          path crate
+---  root/app/Cargo.toml          member that inherits
+---@return string tmp
+local function make_workspace()
+    local tmp = vim.fn.tempname()
+    write_file(tmp .. "/Cargo.toml", table.concat({
+        "[workspace]",
+        'members = ["app", "lib"]',
+        'resolver = "2"',
+        "",
+        "[workspace.package]",
+        'edition = "2021"',
+        "",
+        "[workspace.dependencies]",
+        'serde = "1.0.200"',
+        'tokio = { version = "1.40", features = ["rt"] }',
+        'lib = { path = "lib" }',
+        'regex = { git = "https://github.com/rust-lang/regex" }',
+        'cc.version = "1.0"',
+        "",
+        "[package]",
+        'name = "workspace-root"',
+        'version = "0.1.0"',
+        "",
+        "[dependencies]",
+        "serde.workspace = true",
+    }, "\n") .. "\n")
+    write_file(tmp .. "/lib/Cargo.toml", table.concat({
+        "[package]",
+        'name = "lib"',
+        'version = "0.1.0"',
+    }, "\n") .. "\n")
+    write_file(tmp .. "/app/Cargo.toml", table.concat({
+        "[package]",
+        'name = "app"',
+        'version = "0.1.0"',
+        "",
+        "[dependencies]",
+        "serde.workspace = true",
+        'tokio = { workspace = true, features = ["macros"] }',
+        "lib.workspace = true",
+        "",
+        "[dependencies.cc]",
+        "workspace = true",
+        "",
+        "[dev-dependencies]",
+        "regex.workspace = true",
+        "",
+        "[build-dependencies]",
+        "cc.workspace = true",
+    }, "\n") .. "\n")
+    return tmp
 end
 
 describe("parse dotted workspace keys", function()
@@ -286,13 +366,6 @@ end)
 describe("workspace root discovery", function()
     local tmp
 
-    local function write_file(path, contents)
-        vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-        local f = assert(io.open(path, "w"))
-        f:write(contents)
-        f:close()
-    end
-
     before_each(function()
         tmp = vim.fn.tempname()
         vim.fn.mkdir(tmp, "p")
@@ -323,6 +396,248 @@ describe("workspace root discovery", function()
         )
         local root = workspace.find_root(tmp .. "/root/nested/crate/Cargo.toml")
         assert.equals(vim.fs.normalize(tmp .. "/root/Cargo.toml"), root)
+    end)
+end)
+
+describe("workspace go-to-definition", function()
+    local tmp
+
+    before_each(function()
+        tmp = vim.fn.tempname()
+        vim.fn.mkdir(tmp, "p")
+    end)
+
+    after_each(function()
+        vim.fn.delete(tmp, "rf")
+    end)
+
+    it("jumps to workspace.dependencies for a registry inherit", function()
+        write_file(tmp .. "/Cargo.toml", "[workspace]\nmembers = [\"crate\"]\n\n[workspace.dependencies]\nserde = \"1.0.200\"\n")
+        write_file(tmp .. "/crate/Cargo.toml", "[package]\nname = \"crate\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde.workspace = true\n")
+
+        local member_buf = vim.fn.bufadd(tmp .. "/crate/Cargo.toml")
+        vim.fn.bufload(member_buf)
+        local _, crates = toml.parse_crates(member_buf)
+        workspace.resolve(member_buf, crates)
+        local serde = crate_named(crates, "serde")
+        local loc = workspace.definition_location(serde, member_buf)
+        assert.is_not_nil(loc)
+        assert.equals(vim.fs.normalize(tmp .. "/Cargo.toml"), loc.filename)
+        assert.equals(4, loc.lnum)
+    end)
+
+    it("jumps to the path crate Cargo.toml for a path inherit", function()
+        write_file(tmp .. "/Cargo.toml", "[workspace]\nmembers = [\"app\", \"lib\"]\n\n[workspace.dependencies]\nlib = { path = \"lib\" }\n")
+        write_file(tmp .. "/lib/Cargo.toml", "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n")
+        write_file(tmp .. "/app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib.workspace = true\n")
+
+        local member_buf = vim.fn.bufadd(tmp .. "/app/Cargo.toml")
+        vim.fn.bufload(member_buf)
+        local _, crates = toml.parse_crates(member_buf)
+        workspace.resolve(member_buf, crates)
+        local lib = crate_named(crates, "lib")
+        local loc = workspace.definition_location(lib, member_buf)
+        assert.is_not_nil(loc)
+        assert.equals(vim.fs.normalize(tmp .. "/lib/Cargo.toml"), loc.filename)
+    end)
+end)
+
+describe("emulated workspace", function()
+    local tmp
+
+    before_each(function()
+        tmp = make_workspace()
+    end)
+
+    after_each(function()
+        vim.fn.delete(tmp, "rf")
+    end)
+
+    it("resolves dotted, inline, and table inherits from a member Cargo.toml", function()
+        local crates = load_and_resolve(tmp .. "/app/Cargo.toml")
+
+        local serde = crate_named(crates, "serde")
+        assert.equals(TomlCrateSyntax.DOTTED, serde.syntax)
+        assert.equals(DepKind.REGISTRY, serde.dep_kind)
+        assert.equals("1.0.200", serde.inherited.vers.text)
+        assert.equals(1, #serde:vers_reqs())
+        assert.equals(serde.workspace.line, serde:virt_text_line())
+
+        local tokio = crate_named(crates, "tokio")
+        assert.equals(TomlCrateSyntax.INLINE_TABLE, tokio.syntax)
+        assert.equals(DepKind.REGISTRY, tokio.dep_kind)
+        assert.equals("1.40", tokio.inherited.vers.text)
+        assert.equals("macros", tokio.feat.items[1].name)
+        assert.equals("rt", tokio.inherited.feat.items[1].name)
+
+        local lib = crate_named(crates, "lib")
+        assert.equals(DepKind.PATH, lib.dep_kind)
+        assert.equals("lib", lib.inherited.path.text)
+
+        local regex
+        for _, c in ipairs(crates) do
+            if c.explicit_name == "regex" then
+                regex = c
+            end
+        end
+        assert.is_not_nil(regex)
+        assert.equals(DepKind.GIT, regex.dep_kind)
+
+        local cc_table
+        for _, c in ipairs(crates) do
+            if c.explicit_name == "cc" and c.syntax == TomlCrateSyntax.TABLE then
+                cc_table = c
+            end
+        end
+        assert.is_not_nil(cc_table)
+        assert.equals(DepKind.REGISTRY, cc_table.dep_kind)
+        assert.equals("1.0", cc_table.inherited.vers.text)
+    end)
+
+    it("inherits in the root package from the same Cargo.toml", function()
+        local crates = load_and_resolve(tmp .. "/Cargo.toml")
+        local serde
+        for _, c in ipairs(crates) do
+            if c.explicit_name == "serde" and c.workspace then
+                serde = c
+            end
+        end
+        assert.is_not_nil(serde)
+        assert.equals(DepKind.REGISTRY, serde.dep_kind)
+        assert.equals("1.0.200", serde.inherited.vers.text)
+    end)
+
+    it("reads workspace.dependencies from disk when the root is not loaded", function()
+        local crates = load_and_resolve(tmp .. "/app/Cargo.toml")
+        assert.equals("1.0.200", crate_named(crates, "serde").inherited.vers.text)
+    end)
+
+    it("prefers unsaved root buffer contents over disk", function()
+        local root_buf = vim.fn.bufadd(tmp .. "/Cargo.toml")
+        vim.fn.bufload(root_buf)
+        vim.api.nvim_buf_set_lines(root_buf, 0, -1, false, {
+            "[workspace]",
+            'members = ["app"]',
+            "",
+            "[workspace.dependencies]",
+            'serde = "9.9.9"',
+        })
+
+        local crates = load_and_resolve(tmp .. "/app/Cargo.toml")
+        assert.equals("9.9.9", crate_named(crates, "serde").inherited.vers.text)
+    end)
+
+    it("diagnoses a missing workspace.dependencies key", function()
+        write_file(tmp .. "/app/Cargo.toml", table.concat({
+            "[package]",
+            'name = "app"',
+            'version = "0.1.0"',
+            "",
+            "[dependencies]",
+            "not-in-workspace.workspace = true",
+        }, "\n") .. "\n")
+
+        local crates, _, sections = load_and_resolve(tmp .. "/app/Cargo.toml")
+        local _, diags = diagnostic.process_crates(sections, crates)
+        local found
+        for _, d in ipairs(diags) do
+            if d.kind == CratesDiagnosticKind.WORKSPACE_DEP_MISSING then
+                found = d
+            end
+        end
+        assert.is_not_nil(found)
+    end)
+
+    it("diagnoses a missing workspace root", function()
+        -- Must sit outside the emulated workspace so walk-up does not find it.
+        local lone_dir = vim.fn.tempname()
+        local lone = lone_dir .. "/Cargo.toml"
+        write_file(lone, table.concat({
+            "[package]",
+            'name = "orphan"',
+            'version = "0.1.0"',
+            "",
+            "[dependencies]",
+            "serde.workspace = true",
+        }, "\n") .. "\n")
+
+        local crates, _, sections = load_and_resolve(lone)
+        local serde = crate_named(crates, "serde")
+        assert.equals(DepKind.WORKSPACE, serde.dep_kind)
+        assert.is_nil(serde.inherited)
+
+        local _, diags = diagnostic.process_crates(sections, crates)
+        local found
+        for _, d in ipairs(diags) do
+            if d.kind == CratesDiagnosticKind.WORKSPACE_NO_ROOT then
+                found = d
+            end
+        end
+        assert.is_not_nil(found)
+        vim.fn.delete(lone_dir, "rf")
+    end)
+
+    it("diagnoses an invalid workspace boolean", function()
+        local buf = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+            "[dependencies]",
+            "serde.workspace = maybe",
+        })
+        local sections, crates = toml.parse_crates(buf)
+        local _, diags = diagnostic.process_crates(sections, crates)
+        local found
+        for _, d in ipairs(diags) do
+            if d.kind == CratesDiagnosticKind.WORKSPACE_INVALID then
+                found = d
+            end
+        end
+        assert.is_not_nil(found)
+    end)
+
+    it("inherits target-specific dotted workspace deps", function()
+        write_file(tmp .. "/app/Cargo.toml", table.concat({
+            "[package]",
+            'name = "app"',
+            'version = "0.1.0"',
+            "",
+            "[target.'cfg(unix)'.dependencies]",
+            "serde.workspace = true",
+        }, "\n") .. "\n")
+
+        local crates = load_and_resolve(tmp .. "/app/Cargo.toml")
+        local serde = crate_named(crates, "serde")
+        assert.equals(DepKind.REGISTRY, serde.dep_kind)
+        assert.equals("1.0.200", serde.inherited.vers.text)
+        assert.is_not_nil(serde.section.target)
+    end)
+
+    it("jumps from the member to the path crate Cargo.toml", function()
+        local crates, buf = load_and_resolve(tmp .. "/app/Cargo.toml")
+        local loc = workspace.definition_location(crate_named(crates, "lib"), buf)
+        assert.is_not_nil(loc)
+        assert.equals(vim.fs.normalize(tmp .. "/lib/Cargo.toml"), loc.filename)
+    end)
+
+    it("jumps from the member to the workspace.dependencies pin", function()
+        local crates, buf = load_and_resolve(tmp .. "/app/Cargo.toml")
+        local loc = workspace.definition_location(crate_named(crates, "serde"), buf)
+        assert.is_not_nil(loc)
+        assert.equals(vim.fs.normalize(tmp .. "/Cargo.toml"), loc.filename)
+        local root_lines = vim.split(assert(io.open(tmp .. "/Cargo.toml"):read("*a")), "\n")
+        assert.is_not_nil(root_lines[loc.lnum + 1]:find("serde", 1, true))
+    end)
+
+    it("edits the workspace pin without changing the member", function()
+        local crates, member_buf = load_and_resolve(tmp .. "/app/Cargo.toml")
+        local semver = require("crates.semver")
+        edit.set_version(member_buf, crate_named(crates, "serde"), semver.parse_version("1.0.210"))
+
+        local root_buf = workspace.ensure_buf(vim.fs.normalize(tmp .. "/Cargo.toml"))
+        local root_text = table.concat(vim.api.nvim_buf_get_lines(root_buf, 0, -1, false), "\n")
+        assert.is_not_nil(root_text:find('serde = "1.0.210"', 1, true))
+        local member_text = table.concat(vim.api.nvim_buf_get_lines(member_buf, 0, -1, false), "\n")
+        assert.is_not_nil(member_text:find("serde.workspace = true", 1, true))
+        assert.is_nil(member_text:find("1.0.210", 1, true))
     end)
 end)
 

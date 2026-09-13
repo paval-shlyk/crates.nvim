@@ -244,6 +244,7 @@
 ---@field actions boolean
 ---@field completion boolean
 ---@field hover boolean
+---@field definition boolean
 
 
 ---@class crates.UserConfig
@@ -462,4 +463,5 @@
 ---@field public actions? boolean
 ---@field public completion? boolean
 ---@field public hover? boolean
+---@field public definition? boolean
 

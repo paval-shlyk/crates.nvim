@@ -270,6 +270,7 @@ For more information about individual config options see |crates-config|.
             actions = false,
             completion = false,
             hover = false,
+            definition = true,
         },
     }
 <
@@ -452,6 +453,12 @@ use_git_source()                                     *crates.use_git_source()*
     Convert crate dependency to use a git source instead of version number.
 
 
+goto_workspace_definition(): `boolean`    *crates.goto_workspace_definition()*
+    Go to the workspace crate definition.
+    Path deps open that package's `Cargo.toml`; other inherited deps open the
+    `[workspace.dependencies]` entry in the workspace root.
+
+
 open_homepage()                                       *crates.open_homepage()*
     Open the homepage of the crate on the current line.
 
@@ -529,6 +536,7 @@ commands:
     - |crates.use_git_source()|
     - |crates.expand_plain_crate_to_inline_table()|
     - |crates.extract_crate_into_table()|
+    - |crates.goto_workspace_definition()|
     - |crates.open_homepage()|
     - |crates.open_repository()|
     - |crates.open_documentation()|
@@ -1674,6 +1682,15 @@ lsp.hover                                            *crates-config-lsp-hover*
     Type: `boolean`, Default: `false`
 
     Whether to enable the `hover` capability.
+
+
+lsp.definition                                  *crates-config-lsp-definition*
+    Type: `boolean`, Default: `true`
+
+    Whether to enable the `definitionProvider` capability.
+
+    Jump from a `workspace = true` dependency to its definition in
+    `[workspace.dependencies]`, or to that crate's `Cargo.toml` when it is a path dep.
 
 
 

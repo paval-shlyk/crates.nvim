@@ -813,15 +813,14 @@ local function offset_dotted_entry(entry, offset, name_col, line_len)
     return entry
 end
 
----Parse a dotted key assignment (`foo.workspace = true`, `foo.version = "1"`).
+---Parse a dotted key assignment (`dep.workspace = true`, `foo.version = "1"`).
 ---@param line string
 ---@param line_nr integer
 ---@return TomlCrate?
 function M.parse_dotted_crate(line, line_nr)
-    -- Allow optional quotes and whitespace around `.` (`dep.workspace = true`,
-    -- `"async-trait".workspace = true`, `dep . workspace = true`).
-    local name_s, name, name_e, key_s, key = line:match(
-        [[^%s*["']?()([A-Za-z0-9_%-]+)()["']?%s*%.%s*()([A-Za-z0-9_%-]+)%s*=]]
+    -- `name.key = value`, with optional quotes and whitespace around `.`.
+    local name_s, name, name_e, key_s, key, key_e = line:match(
+        "^%s*['\"]?()([A-Za-z0-9_%-]+)()['\"]?%s*%.%s*['\"]?()([A-Za-z0-9_%-]+)()['\"]?%s*="
     )
     if not name then
         return nil
@@ -853,6 +852,19 @@ function M.parse_dotted_crate(line, line_nr)
     local entry
     if spec.kind == "bool" then
         entry = M.parse_crate_table_bool(sub, line_nr, M[spec.pattern])
+        if not entry then
+            -- Fallback when the table pattern misses (alignment, odd whitespace).
+            local bool_s, text, bool_e = line:match("=%s*()(true|false)()")
+            if text then
+                crate[spec.field] = {
+                    text = text,
+                    line = line_nr,
+                    col = Span.new(bool_s - 1, bool_e - 1),
+                    decl_col = Span.new(name_s - 1, #line),
+                }
+                return crate
+            end
+        end
     else
         entry = M.parse_crate_table_str(sub, line_nr, M[spec.pattern])
     end
